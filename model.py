@@ -41,28 +41,38 @@ class SRCNN(object):
     self.build_model()
 
   def build_model(self):
-    self.images = tf.placeholder(tf.float32, [None, self.image_size, self.image_size, self.c_dim], name='images')
-    self.labels = tf.placeholder(tf.float32, [None, self.label_size, self.label_size, self.c_dim], name='labels')
-    
-    self.weights = {
-      'w1': tf.Variable(tf.random_normal([9, 9, 1, 64], stddev=1e-3), name='w1'),
-      'w2': tf.Variable(tf.random_normal([1, 1, 64, 32], stddev=1e-3), name='w2'),
-      'w3': tf.Variable(tf.random_normal([5, 5, 32, 1], stddev=1e-3), name='w3')
-    }
-    self.biases = {
-      'b1': tf.Variable(tf.zeros([64]), name='b1'),
-      'b2': tf.Variable(tf.zeros([32]), name='b2'),
-      'b3': tf.Variable(tf.zeros([1]), name='b3')
-    }
+    with tf.name_scope('Inputs'):
+      self.images = tf.placeholder(tf.float32, [None, self.image_size, self.image_size, self.c_dim], name='images')
+    with tf.name_scope('Labels'):
+      self.labels = tf.placeholder(tf.float32, [None, self.label_size, self.label_size, self.c_dim], name='labels')
+  
+    with tf.name_scope('Weights'):
+      self.weights = {
+        'w1': tf.Variable(tf.random_normal([9, 9, self.c_dim, 64], stddev=1e-3), name='w1'),
+        'w2': tf.Variable(tf.random_normal([1, 1, 64, 32], stddev=1e-3), name='w2'),
+        'w3': tf.Variable(tf.random_normal([5, 5, 32, self.c_dim], stddev=1e-3), name='w3')
+      }
+    with tf.name_scope('Bias'):
+      self.biases = {
+        'b1': tf.Variable(tf.zeros([64]), name='b1'),
+        'b2': tf.Variable(tf.zeros([32]), name='b2'),
+        'b3': tf.Variable(tf.zeros([1]), name='b3')
+      }
 
+    #predivtion
     self.pred = self.model()
 
     # Loss function (MSE)
-    self.loss = tf.reduce_mean(tf.square(self.labels - self.pred))
+    self.loss = tf.reduce_mean(tf.abs(self.labels - self.pred))
+    tf.summary.scalar('loss',self.loss)
 
     self.saver = tf.train.Saver()
 
   def train(self, config):
+
+    merged = tf.summary.merge_all()
+
+
     if config.is_train:
       input_setup(self.sess, config)
     else:
@@ -75,8 +85,11 @@ class SRCNN(object):
 
     train_data, train_label = read_data(data_dir)
 
-    # Stochastic gradient descent with the standard backpropagation
-    self.train_op = tf.train.GradientDescentOptimizer(config.learning_rate).minimize(self.loss)
+    with tf.name_scope('Train'):
+      # Stochastic gradient descent with the standard backpropagation
+      #self.train_op = tf.train.AdamOptimizer(config.learning_rate).minimize(self.loss)
+      self.train_op = tf.train.GradientDescentOptimizer(config.learning_rate).minimize(self.loss)
+      
 
     tf.initialize_all_variables().run()
     
@@ -91,6 +104,9 @@ class SRCNN(object):
     if config.is_train:
       print("Training...")
 
+      train_writer = tf.summary.FileWriter('logs/train',self.sess.graph)
+
+
       for ep in xrange(config.epoch):
         # Run by batch images
         batch_idxs = len(train_data) // config.batch_size
@@ -100,29 +116,35 @@ class SRCNN(object):
 
           counter += 1
           _, err = self.sess.run([self.train_op, self.loss], feed_dict={self.images: batch_images, self.labels: batch_labels})
-
           if counter % 10 == 0:
             print("Epoch: [%2d], step: [%2d], time: [%4.4f], loss: [%.8f]" \
               % ((ep+1), counter, time.time()-start_time, err))
 
           if counter % 500 == 0:
+            summary = self.sess.run(merged,feed_dict={self.images: batch_images, self.labels: batch_labels})
+            train_writer.add_summary(summary,counter)
             self.save(config.checkpoint_dir, counter)
 
     else:
       print("Testing...")
+
+      test_writer = tf.summary.FileWriter('logs/test',self.sess.graph)
 
       result = self.pred.eval({self.images: train_data, self.labels: train_label})
 
       result = merge(result, [nx, ny])
       result = result.squeeze()
       image_path = os.path.join(os.getcwd(), config.sample_dir)
-      image_path = os.path.join(image_path, "test_image.png")
+      image_path = os.path.join(image_path, "srcnn.png")
       imsave(result, image_path)
 
   def model(self):
-    conv1 = tf.nn.relu(tf.nn.conv2d(self.images, self.weights['w1'], strides=[1,1,1,1], padding='VALID') + self.biases['b1'])
-    conv2 = tf.nn.relu(tf.nn.conv2d(conv1, self.weights['w2'], strides=[1,1,1,1], padding='VALID') + self.biases['b2'])
-    conv3 = tf.nn.conv2d(conv2, self.weights['w3'], strides=[1,1,1,1], padding='VALID') + self.biases['b3']
+    with tf.name_scope('Conv1'):
+      conv1 = tf.nn.relu(tf.nn.conv2d(self.images, self.weights['w1'], strides=[1,1,1,1], padding='VALID') + self.biases['b1'])
+    with tf.name_scope('Conv2'):
+      conv2 = tf.nn.relu(tf.nn.conv2d(conv1, self.weights['w2'], strides=[1,1,1,1], padding='VALID') + self.biases['b2'])
+    with tf.name_scope('Conv3'):
+      conv3 = tf.nn.conv2d(conv2, self.weights['w3'], strides=[1,1,1,1], padding='VALID') + self.biases['b3']
     return conv3
 
   def save(self, checkpoint_dir, step):
@@ -149,3 +171,14 @@ class SRCNN(object):
         return True
     else:
         return False
+
+
+
+
+
+
+
+
+
+
+
